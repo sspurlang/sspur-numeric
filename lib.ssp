@@ -1,0 +1,1241 @@
+// numeric: integer and number theory helpers, rounding with explicit modes, interpolation,
+// primes, combinatorics and descriptive statistics. Everything is pure.
+//
+// Conventions: functions that can have no answer return `Opt` (an empty list, a constant
+// series, an overflow); inputs that are always a caller's bug are refinements or `pre`
+// clauses, which trap with the clause. F64 comparisons in SSPUR are a total order (NaN
+// equals itself and sorts above +inf, -0.0 sorts below 0.0), so the statistics check NaN
+// explicitly: a NaN anywhere in the input makes a numeric result NaN.
+
+// ---------- constants ----------
+
+// The largest Int, 2^63 - 1.
+pub fn int_max() -> Int
+  ex int_max() == 9223372036854775807
+= 9223372036854775807
+
+// The smallest Int, -2^63.
+pub fn int_min() -> Int
+  ex int_min() == -9223372036854775807 - 1
+= -9223372036854775807 - 1
+
+// ---------- integers ----------
+
+// The absolute value of `x`, or `none` for `int_min()`, whose absolute value is not an Int.
+pub fn checked_abs(x: Int) -> Opt[Int]
+= if x == int_min() then none else some(x.abs)
+
+// The sign of `x`: -1, 0 or 1.
+pub fn sign_int(x: Int) -> Int
+  post r >= -1 and r <= 1
+= if x > 0 then 1 else if x < 0 then -1 else 0
+
+// The sign of `x`: -1.0, 1.0, or `x` itself for zeros (keeping -0.0) and NaN.
+pub fn sign_f64(x: F64) -> F64
+= if x.is_nan then x else if x > 0.0 then 1.0 else if x < 0.0 and x.abs > 0.0 then -1.0 else x
+
+// The greatest common divisor of every number in `xs`, never negative; 0 for an empty list or
+// all zeros. Traps, like `Int.gcd`, only when the result would be 2^63 (only `int_min()` and zeros).
+pub fn gcd_all(xs: List[Int]) -> Int
+  post r >= 0
+= do
+  g = xs.fold(0, (acc, x) => if acc == 0 then x else acc.gcd(x))
+  if g < 0 then -g else g
+
+// The least common multiple of `a` and `b`, never negative (0 if either is 0), or `none` when
+// it doesn't fit in an Int.
+pub fn checked_lcm(a: Int, b: Int) -> Opt[Int]
+= if a == 0 or b == 0 then some(0) else if a == int_min() and b == int_min() then none else do
+  g = a.gcd(b)
+  match (a / g).checked_mul(b)
+  | some(p) => checked_abs(p)
+  | none => none
+
+// The least common multiple of every number in `xs`, never negative: 1 for an empty list, 0
+// if any is 0, `none` when it doesn't fit in an Int.
+pub fn lcm_all(xs: List[Int]) -> Opt[Int]
+= xs.fold(some(1), (acc, x) => do
+  match acc
+  | some(a) => checked_lcm(a, x)
+  | none => none)
+
+fn egcd_rec(a: Int, b: Int) -> (Int, Int, Int)
+= if b == 0 then (a, 1, 0) else do
+  (g, x, y) = egcd_rec(b, a % b)
+  (g, y, x - a / b * y)
+
+// The extended Euclidean algorithm: `(g, x, y)` with `g = gcd(a, b) >= 0` and
+// `a * x + b * y == g`. Neither argument may be `int_min()`.
+pub fn egcd(a: Int where _ != -9223372036854775807 - 1, b: Int where _ != -9223372036854775807 - 1) -> (Int, Int, Int)
+  post r.0 >= 0
+  ex egcd(240, 46) == (2, -9, 47)
+= do
+  (g, x, y) = egcd_rec(a, b)
+  if g < 0 then (-g, -x, -y) else (g, x, y)
+
+// Whether `a` and `b` have no common divisor above 1.
+pub fn is_coprime(a: Int, b: Int) -> Bool
+= a.gcd(b) == 1
+
+// Division rounded toward negative infinity, like Python's `//`: `floor_div(-7, 2) == -4`.
+// Traps on `int_min() / -1`, like `/`.
+pub fn floor_div(a: Int, b: Int where _ != 0) -> Int
+  ex floor_div(-7, 2) == -4
+= do
+  q = a / b
+  if a % b != 0 and a < 0 != (b < 0) then q - 1 else q
+
+// The remainder that goes with `floor_div`, with the sign of `b`, like Python's `%`:
+// `floor_mod(-7, 2) == 1`, `floor_mod(7, -2) == -1`.
+pub fn floor_mod(a: Int, b: Int where _ != 0) -> Int
+  ex floor_mod(-7, 2) == 1
+= do
+  r = a % b
+  if r != 0 and r < 0 != (b < 0) then r + b else r
+
+// Division rounded toward positive infinity: `ceil_div(7, 2) == 4`, `ceil_div(-7, 2) == -3`.
+pub fn ceil_div(a: Int, b: Int where _ != 0) -> Int
+  ex ceil_div(7, 2) == 4
+= do
+  q = a / b
+  if a % b != 0 and a < 0 == (b < 0) then q + 1 else q
+
+// The Euclidean remainder: always in `0 .. |b|`, whatever the signs: `euclid_mod(-7, 3) == 2`.
+// This is the "mod that is never negative".
+pub fn euclid_mod(a: Int, b: Int where _ != 0) -> Int
+  post r >= 0
+  ex euclid_mod(-7, 3) == 2
+= do
+  r = a % b
+  if r >= 0 then r else if b > 0 then r + b else r - b
+
+// The Euclidean quotient: `a == b * euclid_div(a, b) + euclid_mod(a, b)`.
+pub fn euclid_div(a: Int, b: Int where _ != 0) -> Int
+  ex euclid_div(-7, 3) == -3
+= do
+  q = a / b
+  if a % b >= 0 then q else if b > 0 then q - 1 else q + 1
+
+// `(a + b) mod m` in `0 .. m`, without overflow for any Int inputs.
+pub fn addmod(a: Int, b: Int, m: Int where _ > 0) -> Int
+  post r >= 0 and r < m
+  ex addmod(9223372036854775807, 9223372036854775807, 10) == 4
+= do
+  x = euclid_mod(a, m)
+  y = euclid_mod(b, m)
+  if x >= m - y then x - (m - y) else x + y
+
+// `(a * b) mod m` in `0 .. m`, without overflow for any Int inputs (it uses BigInt when the
+// product doesn't fit).
+pub fn mulmod(a: Int, b: Int, m: Int where _ > 0) -> Int
+  post r >= 0 and r < m
+  ex mulmod(9223372036854775807, 9223372036854775807, 1000000007) == 737564071
+= match a.checked_mul(b)
+| some(p) => euclid_mod(p, m)
+| none => euclid_mod(big(a).mul(big(b)).rem(big(m)).to_int.or(0), m)
+
+// `base ^ exp mod m` in `0 .. m`, by square and multiply; `mod_pow(x, 0, m)` is `1 mod m`.
+pub fn mod_pow(base: Int, exp: Int where _ >= 0, m: Int where _ > 0) -> Int
+  post r >= 0 and r < m
+  ex mod_pow(2, 10, 1000) == 24
+= do
+  var result = 1 % m
+  var b = euclid_mod(base, m)
+  var e = exp
+  for i in 0..64
+    if e.band(1) == 1 then result := mulmod(result, b, m)
+    e := e.shr(1)
+    b := mulmod(b, b, m)
+  result
+
+// The inverse of `a` modulo `m`: `x` in `0 .. m` with `a * x mod m == 1 mod m`, or `none`
+// when `a` and `m` are not coprime.
+pub fn mod_inv(a: Int, m: Int where _ > 0) -> Opt[Int]
+  ex mod_inv(3, 11) == some(4)
+= do
+  (g, x, _) = egcd(euclid_mod(a, m), m)
+  if g == 1 then some(euclid_mod(x, m)) else none
+
+fn square_le(x: Int, n: Int) -> Bool
+= x.checked_mul(x).map(_ <= n).or(false)
+
+// The integer square root: the largest `r` with `r * r <= n`.
+pub fn isqrt(n: Int where _ >= 0) -> Int
+  post r >= 0 and r <= n
+  ex isqrt(15) == 3
+= do
+  var r = n.to_f64.sqrt.floor
+  for i in 0..3
+    if not square_le(r, n) then r := r - 1
+  for i in 0..3
+    if square_le(r + 1, n) then r := r + 1
+  r
+
+fn pow_le(x: Int, k: Int, n: Int) -> Bool
+= checked_pow(x, k).map(_ <= n).or(false)
+
+// The integer `k`-th root: the largest `r >= 0` with `r ^ k <= n`.
+pub fn iroot(n: Int where _ >= 0, k: Int where _ >= 1) -> Int
+  post r >= 0 and r <= n
+  ex iroot(1000, 3) == 10
+= if k == 1 or n < 2 then n else do
+  var r = n.to_f64.pow(1.0 / k.to_f64).floor
+  for i in 0..4
+    if r > 0 and not pow_le(r, k, n) then r := r - 1
+  for i in 0..4
+    if pow_le(r + 1, k, n) then r := r + 1
+  r
+
+// The integer cube root, rounded toward negative infinity, for any `n`:
+// `icbrt(27) == 3`, `icbrt(26) == 2`, `icbrt(-9) == -3`.
+pub fn icbrt(n: Int) -> Int
+= if n >= 0 then iroot(n, 3) else do
+  m = if n == int_min() then int_max() else -n
+  c = iroot(m, 3)
+  if n != int_min() and checked_pow(c, 3) == some(m) then -c else -c - 1
+
+// `base ^ exp`, or `none` if it overflows. `checked_pow(0, 0) == some(1)`.
+// For exact big powers use `big(base).pow(exp)`.
+pub fn checked_pow(base: Int, exp: Int where _ >= 0) -> Opt[Int]
+  ex checked_pow(2, 62) == some(4611686018427387904)
+= do
+  var result = 1
+  var b = base
+  var e = exp
+  for i in 0..64
+    if e > 0 then do
+      if e.band(1) == 1 then match result.checked_mul(b)
+      | some(v) => result := v
+      | none => return none
+      e := e.shr(1)
+      if e > 0 then match b.checked_mul(b)
+      | some(v) => b := v
+      | none => return none
+  some(result)
+
+// Whether `n` is the square of an Int (0 and 1 are; negatives are not).
+pub fn is_perfect_square(n: Int) -> Bool
+= n >= 0 and isqrt(n) * isqrt(n) == n
+
+// The largest exponent `k >= 2` and its base `b` with `b ^ k == n`, or `none`. Negative `n`
+// can only be odd powers (`-8` is `(-2, 3)`); 0, 1 and -1 give `none`, since every exponent fits.
+pub fn perfect_power(n: Int) -> Opt[(Int, Int)]
+  ex perfect_power(64) == some((2, 6))
+= if n > -2 and n < 2 then none else do
+  m = if n == int_min() then int_max() else n.abs
+  for j in 0..62
+    k = 63 - j
+    r = iroot(m, k)
+    if n == int_min() and k == 63 then return some((-2, 63))
+    if n != int_min() and r >= 2 and checked_pow(r, k) == some(m) and (n > 0 or k % 2 == 1) then return some((if n > 0 then r else -r, k))
+  none
+
+// Whether `n` is `b ^ k` for some Int `b` and `k >= 2` (see `perfect_power`).
+pub fn is_perfect_power(n: Int) -> Bool
+= perfect_power(n).is_some
+
+// Whether `n` is a positive power of two (1, 2, 4, ...).
+pub fn is_power_of_two(n: Int) -> Bool
+= n > 0 and n.band(n - 1) == 0
+
+// The smallest power of two `>= n` (1 for `n <= 1`), or `none` above 2^62.
+pub fn next_power_of_two(n: Int) -> Opt[Int]
+  ex next_power_of_two(5) == some(8)
+= if n <= 1 then some(1) else if n > 4611686018427387904 then none else some(1.shl(64 - (n - 1).clz))
+
+// ---------- digits and radix ----------
+
+// The digits of `|n|` in `base`, most significant first; `[0]` for 0. Works for `int_min()`.
+pub fn digits(n: Int, base: Int where _ >= 2) -> List[Int]
+  post r.len >= 1
+  ex digits(-1203, 10) == [1, 2, 0, 3]
+= if n == 0 then [0] else do
+  var m = if n > 0 then -n else n
+  var out = []
+  for i in 0..64
+    if m != 0 then do
+      out := out.push(-(m % base))
+      m := m / base
+  out.reverse
+
+// The sum of the decimal digits of `|n|`.
+pub fn digit_sum(n: Int) -> Int
+  post r >= 0
+= digits(n, 10).sum
+
+// The number of digits of `|n|` in `base` (1 for 0).
+pub fn num_digits(n: Int, base: Int where _ >= 2) -> Int
+  post r >= 1
+  ex num_digits(255, 16) == 2
+= digits(n, base).len
+
+// The repeated digit sum of `|n|` down to one decimal digit (0 for 0, else 1 to 9).
+pub fn digital_root(n: Int) -> Int
+  post r >= 0 and r <= 9
+= if n == 0 then 0 else 1 + (if n > 0 then n - 1 else -(n + 1)) % 9
+
+// The number with these digits in `base`, most significant first, or `none` if a digit is
+// outside `0 .. base` or the value overflows. `from_digits([], b) == some(0)`.
+pub fn from_digits(ds: List[Int], base: Int where _ >= 2) -> Opt[Int]
+  ex from_digits([1, 2, 3], 10) == some(123)
+= ds.fold(some(0), (acc, d) => do
+  if d < 0 or d >= base then none else match acc
+  | some(v) => v.checked_mul(base).map(x => x.checked_add(d)).or(none)
+  | none => none)
+
+fn radix_chars() -> Str
+= "0123456789abcdefghijklmnopqrstuvwxyz"
+
+// `n` written in `base` 2 to 36 with lowercase letters and a leading `-` when negative:
+// `to_radix(255, 16) == "ff"`, `to_radix(-5, 2) == "-101"`.
+pub fn to_radix(n: Int, base: Int where _ >= 2 and _ <= 36) -> Str
+  post r.len >= 1
+  ex to_radix(255, 16) == "ff"
+= (if n < 0 then "-" else "") + digits(n, base).map(d => radix_chars().get(d).or("?")).join("")
+
+fn digit_value(c: Str) -> Int
+= radix_chars().index_of(c.lower).or(99)
+
+// Parses `s` as an Int in `base` 2 to 36: an optional `+` or `-`, then one or more digits in
+// either case. No spaces, prefixes or separators. `none` on anything else or on overflow.
+pub fn from_radix(s: Str, base: Int where _ >= 2 and _ <= 36) -> Opt[Int]
+  ex from_radix("-ff", 16) == some(-255)
+= do
+  neg = s.starts_with("-")
+  body = if neg or s.starts_with("+") then s.drop(1) else s
+  if body.is_empty then none else do
+    acc = body.chars.fold(some(0), (acc, c) => do
+      d = digit_value(c)
+      if d >= base then none else match acc
+      | some(v) => v.checked_mul(base).map(x => x.checked_sub(d)).or(none)
+      | none => none)
+    if neg then acc else match acc
+    | some(v) => if v == int_min() then none else some(-v)
+    | none => none
+
+// ---------- rounding ----------
+
+// How to round a value that falls between two candidates. The `Half` modes only differ on
+// exact ties; the others look only at whether anything is discarded.
+// `HalfUp` ties toward +infinity (2.5 to 3, -2.5 to -2); `HalfDown` ties toward -infinity;
+// `HalfEven` ties to the even neighbour (banker's rounding); `HalfAwayFromZero` ties away from
+// zero (school rounding, Java's HALF_UP); `HalfTowardZero` ties toward zero (Java's HALF_DOWN);
+// `Up` rounds away from zero; `Down` toward zero (truncation); `Ceiling` toward +infinity;
+// `Floor` toward -infinity.
+pub type Rounding = HalfUp | HalfDown | HalfEven | HalfAwayFromZero | HalfTowardZero | Up | Down | Ceiling | Floor derive Eq, Show
+
+fn bump(mode: Rounding, neg: Bool, odd: Bool, has_rem: Bool, half: Int) -> Bool
+= match mode
+| HalfUp => half > 0 or half == 0 and not neg
+| HalfDown => half > 0 or half == 0 and neg
+| HalfEven => half > 0 or half == 0 and odd
+| HalfAwayFromZero => half >= 0 and has_rem
+| HalfTowardZero => half > 0
+| Up => has_rem
+| Down => false
+| Ceiling => has_rem and not neg
+| Floor => has_rem and neg
+
+fn cmp_int(a: Int, b: Int) -> Int
+= if a < b then -1 else if a > b then 1 else 0
+
+// `a / b` rounded to an Int with `mode` (the exact quotient decides, with no overflow in the
+// comparison): `div_round(7, 2, HalfEven) == 4`, `div_round(-7, 2, Floor) == -4`.
+// Traps on `int_min() / -1`, like `/`.
+pub fn div_round(a: Int, b: Int where _ != 0, mode: Rounding) -> Int
+  ex div_round(5, 2, HalfEven) == 2
+= do
+  q = a / b
+  r = a % b
+  if r == 0 then q else do
+    neg = a < 0 != (b < 0)
+    ar = r.abs
+    nb = if b > 0 then -b else b
+    half = cmp_int(nb + ar, -ar)
+    if bump(mode, neg, q % 2 != 0, true, half) then (if neg then q - 1 else q + 1) else q
+
+// `n` rounded to a multiple of `step` with `mode`, or `none` if that multiple overflows:
+// `round_int_to_multiple(17, 5, HalfEven) == some(15)`.
+pub fn round_int_to_multiple(n: Int, step: Int where _ > 0, mode: Rounding) -> Opt[Int]
+  ex round_int_to_multiple(18, 5, HalfEven) == some(20)
+= div_round(n, step, mode).checked_mul(step)
+
+fn dec_parts(x: F64) -> (BigInt, Int)
+= do
+  s = x.abs.str
+  (mant, e) = match s.split_once("e")
+  | some((a, b)) => (a, b.to_int.or(0))
+  | none => (s, 0)
+  (ip, fp) = match mant.split_once(".")
+  | some((a, b)) => (a, b)
+  | none => (mant, "")
+  (parse_big(ip + fp).or(big(0)), e - fp.len)
+
+// `x` rounded to `places` decimal places (negative `places` round to tens, hundreds, ...) with
+// `mode`. The rounding is exact on the shortest decimal that prints as `x` (its `.str`), so
+// `round_to(2.675, 2, HalfAwayFromZero) == 2.68` even though the binary double is slightly
+// below 2.675; the result is the double nearest to the rounded decimal. NaN, infinities and
+// zeros come back unchanged, and a value already short enough is returned as it is.
+pub fn round_to(x: F64, places: Int where _ >= -400 and _ <= 400, mode: Rounding) -> F64
+  ex round_to(2.5, 0, HalfEven) == 2.0
+= if not x.is_finite or x.abs == 0.0 then x else do
+  (m, p) = dec_parts(x)
+  if p >= -places then x else do
+    unit = big(10).pow(-places - p)
+    (q, rem) = m.divmod(unit)
+    twice = rem.mul(big(2))
+    half = if twice < unit then -1 else if twice > unit then 1 else 0
+    neg = x < 0.0
+    q2 = if bump(mode, neg, q.rem(big(2)) != big(0), rem != big(0), half) then q.add(big(1)) else q
+    "{if neg then "-" else ""}{q2}e{-places}".to_f64.or(x)
+
+// `x` rounded to a multiple of `step` with `mode`: `round_to_multiple(7.3, 0.5, HalfEven) == 7.5`.
+// Like `round_to`, it works exactly on the shortest decimals that print as `x` and `step`, so
+// `round_to_multiple(0.3, 0.1, Floor) == 0.3` (where `(0.3 / 0.1).floor` is 2), and returns the
+// double nearest the exact multiple. NaN and infinities come back unchanged; a multiple too
+// large for F64 is an infinity.
+pub fn round_to_multiple(x: F64, step: F64 where _ > 0.0, mode: Rounding) -> F64
+  ex round_to_multiple(7.3, 0.5, HalfEven) == 7.5
+= if not x.is_finite or not step.is_finite or x.abs == 0.0 then x else do
+  (mx, px) = dec_parts(x)
+  (ms, ps) = dec_parts(step)
+  num = mx.mul(big(10).pow(max(px - ps, 0)))
+  den = ms.mul(big(10).pow(max(ps - px, 0)))
+  (q, rem) = num.divmod(den)
+  twice = rem.mul(big(2))
+  half = if twice < den then -1 else if twice > den then 1 else 0
+  neg = x < 0.0
+  k = if bump(mode, neg, q.rem(big(2)) != big(0), rem != big(0), half) then q.add(big(1)) else q
+  "{if neg then "-" else ""}{k.mul(ms)}e{ps}".to_f64.or(x)
+
+// ---------- interpolation and angles ----------
+
+// The value `t` of the way from `a` to `b`: `a` at 0, `b` at 1, extrapolating outside
+// (`lerp(10.0, 20.0, 0.25) == 12.5`). Exact at both ends.
+pub fn lerp(a: F64, b: F64, t: F64) -> F64
+= if t == 1.0 then b else a + (b - a) * t
+
+// Where `v` lies between `a` and `b` (0 at `a`, 1 at `b`), or `none` when `a == b`.
+pub fn inverse_lerp(a: F64, b: F64, v: F64) -> Opt[F64]
+= if a == b then none else some((v - a) / (b - a))
+
+// `v` mapped linearly from the range `in_lo .. in_hi` to `out_lo .. out_hi` (not clamped), or
+// `none` when the input range is empty.
+pub fn remap(v: F64, in_lo: F64, in_hi: F64, out_lo: F64, out_hi: F64) -> Opt[F64]
+= inverse_lerp(in_lo, in_hi, v).map(t => lerp(out_lo, out_hi, t))
+
+// The smooth Hermite step from 0 at `edge0` to 1 at `edge1` (GLSL `smoothstep`), clamped to
+// 0 and 1 outside; when the edges are equal it is a hard step at `edge0`.
+pub fn smoothstep(edge0: F64, edge1: F64, x: F64) -> F64
+  post r >= 0.0 and r <= 1.0 or r.is_nan
+= if edge0 == edge1 then (if x < edge0 then 0.0 else 1.0) else do
+  t = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0)
+  t * t * (3.0 - 2.0 * t)
+
+// Whether `a` and `b` are close, as Python's `math.isclose`: `|a - b| <= max(rel_tol *
+// max(|a|, |b|), abs_tol)`. NaN is close to nothing (not even NaN), an infinity only to itself,
+// and 0.0 and -0.0 are close. Use an `abs_tol` above 0 to compare with zero.
+pub fn approx_equal(a: F64, b: F64, rel_tol: F64 where _ >= 0.0, abs_tol: F64 where _ >= 0.0) -> Bool
+  ex approx_equal(1.0, 1.0000001, 1e-6, 0.0)
+= if a.is_nan or b.is_nan then false else if a == b then true else if a.is_inf or b.is_inf then false else (a - b).abs <= max(rel_tol * max(a.abs, b.abs), abs_tol)
+
+// `approx_equal(a, b, 1e-9, 0.0)`, Python's default.
+pub fn is_close(a: F64, b: F64) -> Bool
+= approx_equal(a, b, 1e-9, 0.0)
+
+// Degrees to radians.
+pub fn deg_to_rad(d: F64) -> F64
+= d * pi() / 180.0
+
+// Radians to degrees.
+pub fn rad_to_deg(r: F64) -> F64
+= r * 180.0 / pi()
+
+// `x` wrapped into the half-open range `lo .. hi`, as an angle or a ring buffer index would
+// wrap: `wrap(370.0, 0.0, 360.0) == 10.0`, `wrap(-1.0, 0.0, 360.0) == 359.0`. NaN and the
+// infinities give NaN.
+pub fn wrap(x: F64, lo: F64, hi: F64) -> F64
+  pre hi > lo
+= if not x.is_finite then nan() else do
+  w = hi - lo
+  r = (x - lo).fmod(w)
+  v = if r < 0.0 then lo + r + w else lo + r
+  if v >= hi then lo else v
+
+// An angle in degrees normalized to `0 .. 360`.
+pub fn normalize_degrees(d: F64) -> F64
+= wrap(d, 0.0, 360.0)
+
+// An angle in radians normalized to `-pi .. pi`.
+pub fn normalize_radians(r: F64) -> F64
+= wrap(r, -pi(), pi())
+
+// ---------- primes ----------
+
+fn small_primes() -> List[Int]
+= [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37]
+
+fn mr_composite(n: Int, a: Int, d: Int, s: Int) -> Bool
+= do
+  var x = mod_pow(a, d, n)
+  if x == 1 or x == n - 1 then return false
+  for i in 1..s
+    x := mulmod(x, x, n)
+    if x == n - 1 then return false
+  true
+
+// Whether `n` is prime. Deterministic for every Int: trial division by the primes below 40,
+// then Miller-Rabin with the first twelve prime bases, which has no false positives below
+// 3.3 * 10^24.
+pub fn is_prime(n: Int) -> Bool
+= if n < 2 then false else if small_primes().contains(n) then true else if small_primes().any(p => n % p == 0) then false else do
+  var d = n - 1
+  var s = 0
+  for i in 0..63
+    if d % 2 == 0 then do
+      d := d / 2
+      s := s + 1
+  not small_primes().any(a => mr_composite(n, a, d, s))
+
+// Every prime up to and including `limit`, in order, by the sieve of Eratosthenes. The limit is
+// capped at 10,000,000 (664,579 primes) to keep the memory bounded.
+pub fn primes_up_to(limit: Int where _ >= 0 and _ <= 10000000) -> List[Int]
+  post r.len <= limit
+  ex primes_up_to(20) == [2, 3, 5, 7, 11, 13, 17, 19]
+= if limit < 2 then [] else do
+  root = isqrt(limit)
+  base = (2..root + 1).filter(is_prime)
+  comp = base.flat_map(p => range(p * p, limit + 1, p)).sort.unique
+  var j = 0
+  var out = []
+  for i in 2..limit + 1
+    if j < comp.len and comp[j] == i then j := j + 1 else out := out.push(i)
+  out
+
+// The smallest prime greater than `n`, or `none` when that is above `int_max()`
+// (the largest Int prime is 9223372036854775783).
+pub fn next_prime(n: Int) -> Opt[Int]
+  ex next_prime(13) == some(17)
+= if n < 2 then some(2) else if n >= 9223372036854775783 then none else do
+  for i in 1..1600
+    if is_prime(n + i) then return some(n + i)
+  none
+
+// The largest prime less than `n`, or `none` when `n <= 2`.
+pub fn prev_prime(n: Int) -> Opt[Int]
+  ex prev_prime(13) == some(11)
+= if n <= 2 then none else if n == 3 then some(2) else do
+  for i in 1..1600
+    if is_prime(n - i) then return some(n - i)
+  none
+
+fn rho_step(x: Int, c: Int, n: Int) -> Int
+= addmod(mulmod(x, x, n), c, n)
+
+fn absdiff(a: Int, b: Int) -> Int
+= if a > b then a - b else b - a
+
+fn rho_retrace(n: Int, c: Int, x0: Int, y0: Int) -> Int
+= do
+  var x = x0
+  var y = y0
+  for i in 0..64
+    x := rho_step(x, c, n)
+    y := rho_step(rho_step(y, c, n), c, n)
+    g = absdiff(x, y).gcd(n)
+    if g == n then return 0
+    if g > 1 then return g
+  0
+
+fn rho_try(n: Int, c: Int) -> Int
+= do
+  var x = 2
+  var y = 2
+  for round in 0..40000
+    bx = x
+    by = y
+    var q = 1
+    for i in 0..64
+      x := rho_step(x, c, n)
+      y := rho_step(rho_step(y, c, n), c, n)
+      q := mulmod(q, absdiff(x, y), n)
+    g = q.gcd(n)
+    if g == n then return rho_retrace(n, c, bx, by)
+    if g > 1 then return g
+  0
+
+fn split_composite(n: Int) -> Int
+= do
+  for c in 1..64
+    d = rho_try(n, c)
+    if d > 1 and d < n then return d
+  n
+
+fn factor_big(n: Int) -> List[Int]
+= if n == 1 then [] else if is_prime(n) then [n] else do
+  d = split_composite(n)
+  if d == n then [n] else factor_big(d) + factor_big(n / d)
+
+// The prime factors of `n` with multiplicity, in increasing order: `prime_factors(360) ==
+// [2, 2, 2, 3, 3, 5]`, `prime_factors(1) == []`. Trial division by the primes below 1000, then
+// Pollard's rho (with Miller-Rabin to stop), so any Int factors in well under a second natively.
+pub fn prime_factors(n: Int where _ >= 1) -> List[Int]
+  ex prime_factors(360) == [2, 2, 2, 3, 3, 5]
+= do
+  var m = n
+  var out = []
+  for p in primes_up_to(1000)
+    for i in 0..63
+      if m % p == 0 then do
+        out := out.push(p)
+        m := m / p
+  (out + factor_big(m)).sort
+
+// The factorization of `n` as `(prime, exponent)` pairs in increasing order of prime:
+// `factorize(360) == [(2, 3), (3, 2), (5, 1)]`, `factorize(1) == []`.
+pub fn factorize(n: Int where _ >= 1) -> List[(Int, Int)]
+  ex factorize(360) == [(2, 3), (3, 2), (5, 1)]
+= prime_factors(n).counts
+
+// Every positive divisor of `n`, in increasing order: `divisors(12) == [1, 2, 3, 4, 6, 12]`.
+pub fn divisors(n: Int where _ >= 1) -> List[Int]
+  post r.len >= 1
+  ex divisors(12) == [1, 2, 3, 4, 6, 12]
+= factorize(n).fold([1], (ds, pe) => ds.flat_map(d => (0..pe.1 + 1).map(k => d * checked_pow(pe.0, k).or(1)))).sort
+
+// Euler's totient: how many of `1 ..= n` are coprime to `n`.
+pub fn totient(n: Int where _ >= 1) -> Int
+  post r >= 1 and r <= n
+  ex totient(36) == 12
+= factorize(n).fold(n, (acc, pe) => acc / pe.0 * (pe.0 - 1))
+
+// ---------- combinatorics ----------
+
+fn product_range(lo: Int, hi: Int) -> BigInt
+= if hi < lo then big(1) else if hi - lo < 16 then (0..hi - lo + 1).fold(big(1), (acc, t) => acc.mul(big(lo + t))) else do
+  mid = lo + (hi - lo) / 2
+  product_range(lo, mid).mul(product_range(mid + 1, hi))
+
+// `n!`, exactly. `n` is capped at 100,000 (456,574 digits).
+pub fn factorial(n: Int where _ >= 0 and _ <= 100000) -> BigInt
+  post r >= big(1)
+  ex factorial(20) == big(2432902008176640000)
+= product_range(1, n)
+
+// `n!` as an Int, or `none` above 20!.
+pub fn factorial_int(n: Int where _ >= 0) -> Opt[Int]
+  ex factorial_int(21) == none
+= if n > 20 then none else factorial(n).to_int
+
+// The binomial coefficient "n choose k", exactly: 0 when `k < 0` or `k > n`. Takes
+// `min(k, n - k)` BigInt steps.
+pub fn comb(n: Int where _ >= 0, k: Int) -> BigInt
+  post r >= big(0)
+  ex comb(52, 5) == big(2598960)
+= if k < 0 or k > n then big(0) else do
+  j = min(k, n - k)
+  (1..j + 1).fold(big(1), (acc, i) => acc.mul(big(n - j + i)).div(big(i)))
+
+// "n choose k" as an Int, or `none` if it overflows; 0 when `k < 0` or `k > n`.
+pub fn comb_int(n: Int where _ >= 0, k: Int) -> Opt[Int]
+  ex comb_int(66, 33) == some(7219428434016265740)
+= if k < 0 or k > n then some(0) else do
+  j = min(k, n - k)
+  var acc = 1
+  for i in 1..j + 1
+    g = acc.gcd(i)
+    match (acc / g).checked_mul((n - j + i) / (i / g))
+    | some(v) => acc := v
+    | none => return none
+  some(acc)
+
+// The number of ordered arrangements of `k` items out of `n`, `n! / (n - k)!`, exactly;
+// 0 when `k < 0` or `k > n`.
+pub fn perm(n: Int where _ >= 0, k: Int) -> BigInt
+  post r >= big(0)
+  ex perm(10, 3) == big(720)
+= if k < 0 or k > n then big(0) else product_range(n - k + 1, n)
+
+// `perm(n, k)` as an Int, or `none` if it overflows.
+pub fn perm_int(n: Int where _ >= 0, k: Int) -> Opt[Int]
+  ex perm_int(10, 3) == some(720)
+= if k < 0 or k > n then some(0) else do
+  var acc = 1
+  for t in 0..k
+    match acc.checked_mul(n - t)
+    | some(v) => acc := v
+    | none => return none
+  some(acc)
+
+// The multinomial coefficient `(k1 + k2 + ...)! / (k1! k2! ...)`, exactly; 1 for an empty list.
+pub fn multinomial(ks: List[Int] where _.all(k => k >= 0)) -> BigInt
+  post r >= big(1)
+  ex multinomial([2, 1, 1]) == big(12)
+= do
+  var total = 0
+  var acc = big(1)
+  for k in ks
+    total := total + k
+    acc := acc.mul(comb(total, k))
+  acc
+
+// The `n`th Catalan number, `comb(2n, n) / (n + 1)`: 1, 1, 2, 5, 14, 42, ...
+pub fn catalan(n: Int where _ >= 0) -> BigInt
+  post r >= big(1)
+  ex catalan(10) == big(16796)
+= comb(2 * n, n).div(big(n + 1))
+
+fn fib_pair(n: Int) -> (BigInt, BigInt)
+= if n == 0 then (big(0), big(1)) else do
+  (a, b) = fib_pair(n / 2)
+  c = a.mul(b.mul(big(2)).sub(a))
+  d = a.mul(a).add(b.mul(b))
+  if n % 2 == 0 then (c, d) else (d, c.add(d))
+
+// The `n`th Fibonacci number (F(0) = 0, F(1) = 1), exactly, by fast doubling.
+pub fn fibonacci(n: Int where _ >= 0) -> BigInt
+  post r >= big(0)
+  ex fibonacci(100) == parse_big("354224848179261915075").get
+= fib_pair(n).0
+
+// The `n`th Fibonacci number as an Int, or `none` above F(92).
+pub fn fibonacci_int(n: Int where _ >= 0) -> Opt[Int]
+  ex fibonacci_int(92) == some(7540113804746346429)
+= if n > 92 then none else fibonacci(n).to_int
+
+// ---------- statistics ----------
+
+// The Int list as F64s, to feed the statistics functions.
+pub fn floats(xs: List[Int]) -> List[F64]
+  post r.len == xs.len
+= xs.map(_.to_f64)
+
+// The sum of `xs`, or `none` if it overflows (the builtin `sum` traps instead).
+pub fn checked_sum(xs: List[Int]) -> Opt[Int]
+= xs.fold(some(0), (acc, x) => do
+  match acc
+  | some(a) => a.checked_add(x)
+  | none => none)
+
+// The product of `xs` (1 for an empty list), or `none` if it overflows.
+pub fn checked_product(xs: List[Int]) -> Opt[Int]
+= xs.fold(some(1), (acc, x) => do
+  match acc
+  | some(a) => a.checked_mul(x)
+  | none => none)
+
+// The sum of `xs` with Neumaier's compensated summation, which keeps the rounding error of
+// long or cancelling sums near one ulp: `compensated_sum([1e100, 1.0, -1e100]) == 1.0` where
+// `sum` gives 0.0. Infinities and NaN give what a plain sum gives. 0.0 for an empty list.
+pub fn compensated_sum(xs: List[F64]) -> F64
+= do
+  var s = 0.0
+  var c = 0.0
+  for x in xs
+    t = s + x
+    if s.abs >= x.abs then c := c + (s - t + x) else c := c + (x - t + s)
+    s := t
+  if s.is_finite then s + c else s
+
+// The product of `xs` (1.0 for an empty list).
+pub fn product(xs: List[F64]) -> F64
+= xs.fold(1.0, (acc, x) => acc * x)
+
+// The running compensated sums: `cumulative_sum([1.0, 2.0, 3.0]) == [1.0, 3.0, 6.0]`.
+pub fn cumulative_sum(xs: List[F64]) -> List[F64]
+  post r.len == xs.len
+= do
+  var s = 0.0
+  var c = 0.0
+  var out = []
+  for x in xs
+    t = s + x
+    if s.abs >= x.abs then c := c + (s - t + x) else c := c + (x - t + s)
+    s := t
+    out := out.push(if s.is_finite then s + c else s)
+  out
+
+// The arithmetic mean, or `none` for an empty list. Uses the compensated sum, and rescales
+// when the sum of finite values would overflow, so `mean([1e308, 1e308]) == some(1e308)`.
+pub fn mean(xs: List[F64]) -> Opt[F64]
+= if xs.is_empty then none else do
+  n = xs.len.to_f64
+  s = compensated_sum(xs)
+  if s.is_finite or xs.any(x => not x.is_finite) then some(s / n) else some(compensated_sum(xs.map(_ / n)))
+
+// The mean of `xs` weighted by `ws`, or `none` if the lengths differ, the list is empty, a
+// weight is negative or the weights sum to 0.
+pub fn weighted_mean(xs: List[F64], ws: List[F64]) -> Opt[F64]
+= do
+  total = compensated_sum(ws)
+  if xs.is_empty or xs.len != ws.len or ws.any(_ < 0.0) or total == 0.0 then none else some(compensated_sum(xs.zip(ws).map(p => p.0 * p.1)) / total)
+
+// The geometric mean, or `none` for an empty list or a negative value; 0.0 if any value is 0.
+pub fn geometric_mean(xs: List[F64]) -> Opt[F64]
+= if xs.is_empty or xs.any(_ < 0.0) then none else if xs.any(x => x.is_nan) then some(nan()) else if xs.any(_ == 0.0) or xs.any(x => x.abs == 0.0) then some(0.0) else mean(xs.map(_.ln)).map(_.exp)
+
+// The harmonic mean, or `none` for an empty list or a negative value; 0.0 if any value is 0
+// (as Python's `statistics.harmonic_mean`).
+pub fn harmonic_mean(xs: List[F64]) -> Opt[F64]
+= if xs.is_empty or xs.any(_ < 0.0) then none else if xs.any(x => x.is_nan) then some(nan()) else if xs.any(x => x.abs == 0.0) then some(0.0) else some(xs.len.to_f64 / compensated_sum(xs.map(1.0 / _)))
+
+fn has_nan(xs: List[F64]) -> Bool
+= xs.any(x => x.is_nan)
+
+// The median (the mean of the two middle values for an even count), or `none` for an empty list.
+pub fn median(xs: List[F64]) -> Opt[F64]
+= if xs.is_empty then none else if has_nan(xs) then some(nan()) else do
+  s = xs.sort
+  n = s.len
+  if n % 2 == 1 then some(s[n / 2]) else some(s[n / 2 - 1] / 2.0 + s[n / 2] / 2.0)
+
+// The lower of the two middle values (the middle one for an odd count), or `none` if empty.
+pub fn median_low(xs: List[F64]) -> Opt[F64]
+= if xs.is_empty then none else if has_nan(xs) then some(nan()) else some(xs.sort[(xs.len - 1) / 2])
+
+// The higher of the two middle values (the middle one for an odd count), or `none` if empty.
+pub fn median_high(xs: List[F64]) -> Opt[F64]
+= if xs.is_empty then none else if has_nan(xs) then some(nan()) else some(xs.sort[xs.len / 2])
+
+// The most common value, the first one seen on ties, or `none` for an empty list. Works for any
+// type; values compare with `==` (so NaN counts as equal to NaN).
+pub fn mode[T](xs: List[T]) -> Opt[T]
+= xs.counts.fold(none, (best, vc) => do
+  match best
+  | none => some(vc)
+  | some(b) => if vc.1 > b.1 then some(vc) else best).map(_.0)
+
+// Every most common value, in first-seen order; `[]` for an empty list.
+pub fn multimode[T](xs: List[T]) -> List[T]
+= do
+  cs = xs.counts
+  top = cs.map(_.1).max.or(0)
+  cs.filter(_.1 == top).map(_.0)
+
+fn welford(xs: List[F64]) -> (Int, F64, F64)
+= do
+  var n = 0
+  var m = 0.0
+  var m2 = 0.0
+  for x in xs
+    n := n + 1
+    d = x - m
+    m := m + d / n.to_f64
+    m2 := m2 + d * (x - m)
+  (n, m, m2)
+
+// The population variance (divided by n), or `none` for an empty list. Welford's algorithm.
+pub fn pvariance(xs: List[F64]) -> Opt[F64]
+= if xs.is_empty then none else do
+  (n, _, m2) = welford(xs)
+  some(max(m2 / n.to_f64, 0.0))
+
+// The sample variance (divided by n - 1), or `none` for fewer than two values.
+pub fn variance(xs: List[F64]) -> Opt[F64]
+= if xs.len < 2 then none else do
+  (n, _, m2) = welford(xs)
+  some(max(m2 / (n - 1).to_f64, 0.0))
+
+// The population standard deviation, or `none` for an empty list.
+pub fn pstdev(xs: List[F64]) -> Opt[F64]
+= pvariance(xs).map(_.sqrt)
+
+// The sample standard deviation, or `none` for fewer than two values.
+pub fn stdev(xs: List[F64]) -> Opt[F64]
+= variance(xs).map(_.sqrt)
+
+// How a quantile is read off the sorted data (`h` is the 0-based position `(n - 1) * p`):
+// `Linear` interpolates at `h` (R-7, the default of NumPy, Excel PERCENTILE.INC and Python's
+// `method="inclusive"`); `Exclusive` interpolates at `(n + 1) * p - 1`, clamped to the data
+// (R-6, Python's default `method="exclusive"`, Excel PERCENTILE.EXC); `Lower` and `Higher` take
+// the element at `floor(h)` or `ceil(h)`; `Midpoint` averages those two; `Nearest` takes the
+// element nearest `h`, ties to even (NumPy's "nearest"); `NearestRank` takes the element at rank
+// `ceil(p * n)` (the classical nearest-rank method, never interpolated).
+pub type Quantile = Linear | Exclusive | Lower | Higher | Midpoint | Nearest | NearestRank derive Eq, Show
+
+fn interp_at(s: List[F64], h: F64) -> F64
+= do
+  n = s.len
+  hc = clamp(h, 0.0, (n - 1).to_f64)
+  lo = hc.floor
+  frac = hc - lo.to_f64
+  if lo + 1 >= n or frac == 0.0 then s[lo] else s[lo] + (s[lo + 1] - s[lo]) * frac
+
+fn quantile_sorted(s: List[F64], p: F64, method: Quantile) -> F64
+= do
+  n = s.len
+  h = (n - 1).to_f64 * p
+  match method
+  | Linear => interp_at(s, h)
+  | Exclusive => interp_at(s, (n + 1).to_f64 * p - 1.0)
+  | Lower => s[h.floor]
+  | Higher => s[h.ceil]
+  | Midpoint => s[h.floor] / 2.0 + s[h.ceil] / 2.0
+  | Nearest => s[round_to(h, 0, HalfEven).round]
+  | NearestRank => s[max((p * n.to_f64).ceil - 1, 0)]
+
+// The `p` quantile (0 to 1) of `xs` by `method`, or `none` for an empty list; NaN if `xs`
+// holds a NaN. `quantile(xs, 0.5, Linear)` is the median.
+pub fn quantile(xs: List[F64], p: F64 where _ >= 0.0 and _ <= 1.0, method: Quantile) -> Opt[F64]
+  ex quantile([1.0, 2.0, 3.0, 4.0], 0.25, Linear) == some(1.75)
+= if xs.is_empty then none else if has_nan(xs) then some(nan()) else some(quantile_sorted(xs.sort, p, method))
+
+// The `p` percentile (0 to 100) with linear interpolation (`Linear`), or `none` if empty.
+pub fn percentile(xs: List[F64], p: F64 where _ >= 0.0 and _ <= 100.0) -> Opt[F64]
+  ex percentile([1.0, 2.0, 3.0, 4.0, 5.0], 90.0) == some(4.6)
+= quantile(xs, p / 100.0, Linear)
+
+// The `n - 1` cut points that divide `xs` into `n` groups of equal probability, as Python's
+// `statistics.quantiles(xs, n=n, method=...)` (pass `Exclusive` for its default): `n = 4` gives
+// the quartiles. `none` for an empty list.
+pub fn quantiles(xs: List[F64], n: Int where _ >= 1, method: Quantile) -> Opt[List[F64]]
+  ex quantiles([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0], 4, Exclusive) == some([2.75, 5.5, 8.25])
+= if xs.is_empty then none else if has_nan(xs) then some((1..n).map(i => nan())) else do
+  s = xs.sort
+  some((1..n).map(i => quantile_sorted(s, i.to_f64 / n.to_f64, method)))
+
+// The interquartile range, Q3 - Q1 with `Linear` quantiles, or `none` for an empty list.
+pub fn iqr(xs: List[F64]) -> Opt[F64]
+  ex iqr([1.0, 2.0, 3.0, 4.0, 5.0]) == some(2.0)
+= match (quantile(xs, 0.25, Linear), quantile(xs, 0.75, Linear))
+| (some(a), some(b)) => some(b - a)
+| _ => none
+
+// The largest value minus the smallest, or `none` for an empty list.
+pub fn value_range(xs: List[F64]) -> Opt[F64]
+= if has_nan(xs) and not xs.is_empty then some(nan()) else match (xs.min, xs.max)
+| (some(a), some(b)) => some(b - a)
+| _ => none
+
+// The z-score of each value, `(x - mean) / pstdev`, or `none` for an empty list or one whose
+// values are all equal.
+pub fn zscores(xs: List[F64]) -> Opt[List[F64]]
+= match (mean(xs), pstdev(xs))
+| (some(m), some(sd)) => if sd == 0.0 then none else some(xs.map(x => (x - m) / sd))
+| _ => none
+
+// Each value scaled to `0 .. 1` by `(x - min) / (max - min)`, or `none` for an empty list or
+// one whose values are all equal.
+pub fn min_max_normalize(xs: List[F64]) -> Opt[List[F64]]
+= match (xs.min, xs.max)
+| (some(lo), some(hi)) => if hi == lo then none else some(xs.map(x => (x - lo) / (hi - lo)))
+| _ => none
+
+fn paired_ok(xs: List[F64], ys: List[F64], least: Int) -> Bool
+= xs.len == ys.len and xs.len >= least
+
+// The sample covariance (divided by n - 1), as Python's `statistics.covariance`, or `none` if
+// the lengths differ or there are fewer than two pairs.
+pub fn covariance(xs: List[F64], ys: List[F64]) -> Opt[F64]
+= if not paired_ok(xs, ys, 2) then none else do
+  mx = mean(xs).or(0.0)
+  my = mean(ys).or(0.0)
+  some(compensated_sum(xs.zip(ys).map(p => (p.0 - mx) * (p.1 - my))) / (xs.len - 1).to_f64)
+
+// Pearson's correlation coefficient in -1 to 1, or `none` if the lengths differ, there are
+// fewer than two pairs, or either series is constant.
+pub fn correlation(xs: List[F64], ys: List[F64]) -> Opt[F64]
+= if not paired_ok(xs, ys, 2) then none else do
+  mx = mean(xs).or(0.0)
+  my = mean(ys).or(0.0)
+  sxy = compensated_sum(xs.zip(ys).map(p => (p.0 - mx) * (p.1 - my)))
+  sxx = compensated_sum(xs.map(x => (x - mx) * (x - mx)))
+  syy = compensated_sum(ys.map(y => (y - my) * (y - my)))
+  if sxx == 0.0 or syy == 0.0 then none else some(clamp(sxy / root_product(sxx, syy), -1.0, 1.0))
+
+// The rank of each value, 1 for the smallest, with ties given the average of their ranks
+// (`ranks([10.0, 20.0, 10.0]) == [1.5, 3.0, 1.5]`), as used by Spearman's correlation.
+pub fn ranks(xs: List[F64]) -> List[F64]
+  post r.len == xs.len
+= do
+  order = xs.enumerate.sort_by(_.1)
+  var out = []
+  var start = 0
+  for k in 0..order.len + 1
+    if k == order.len or order[k].1 != order[start].1 then do
+      avg = (start + k - 1).to_f64 / 2.0 + 1.0
+      for t in start..k
+        out := out.push((order[t].0, avg))
+      start := k
+  out.sort_by(_.0).map(_.1)
+
+fn root_product(a: F64, b: F64) -> F64
+= if (a * b).is_finite then (a * b).sqrt else a.sqrt * b.sqrt
+
+// Spearman's rank correlation (Pearson's on the ranks, ties averaged), or `none` as for
+// `correlation`.
+pub fn spearman(xs: List[F64], ys: List[F64]) -> Opt[F64]
+= if not paired_ok(xs, ys, 2) then none else correlation(ranks(xs), ranks(ys))
+
+// The least squares line through a set of points: `y = slope * x + intercept`, and `r_squared`,
+// the share of the variance in `y` it explains (1.0 when `y` is constant and the fit is exact).
+pub type Fit = {slope: F64, intercept: F64, r_squared: F64} derive Eq, Show
+
+// Simple linear regression of `ys` on `xs` by ordinary least squares, or `none` if the lengths
+// differ, there are fewer than two points, or every `x` is the same.
+pub fn linear_regression(xs: List[F64], ys: List[F64]) -> Opt[Fit]
+  ex linear_regression([1.0, 2.0, 3.0], [2.0, 4.0, 6.0]) == some(Fit{slope: 2.0, intercept: 0.0, r_squared: 1.0})
+= if not paired_ok(xs, ys, 2) then none else do
+  mx = mean(xs).or(0.0)
+  my = mean(ys).or(0.0)
+  sxy = compensated_sum(xs.zip(ys).map(p => (p.0 - mx) * (p.1 - my)))
+  sxx = compensated_sum(xs.map(x => (x - mx) * (x - mx)))
+  syy = compensated_sum(ys.map(y => (y - my) * (y - my)))
+  if sxx == 0.0 then none else do
+    slope = sxy / sxx
+    r2 = if syy == 0.0 then 1.0 else clamp(sxy * sxy / (sxx * syy), 0.0, 1.0)
+    some(Fit{slope, intercept: my - slope * mx, r_squared: r2})
+
+// One histogram bin: the values `v` with `lo <= v < hi` (the last bin also takes `hi`).
+pub type Bin = {lo: F64, hi: F64, count: Int} derive Eq, Show
+
+// `bins` equal-width bins from `lo` to `hi`, counting the values of `xs` inside that range;
+// values outside it and NaN are not counted.
+pub fn histogram_range(xs: List[F64], lo: F64, hi: F64, bins: Int where _ >= 1) -> List[Bin]
+  pre hi > lo
+  post r.len == bins
+= do
+  w = (hi - lo) / bins.to_f64
+  idx = xs.filter(x => x >= lo and x <= hi and not x.is_nan).map(x => min(((x - lo) / w).floor, bins - 1))
+  cs = idx.counts.to_hash_map
+  (0..bins).map(i => Bin{lo: lo + w * i.to_f64, hi: if i == bins - 1 then hi else lo + w * (i + 1).to_f64, count: cs.get(i).or(0)})
+
+// `bins` equal-width bins spanning the smallest to the largest finite value of `xs`; `[]` when
+// there is none. When every value is the same, one bin `[v, v]` holds them all.
+pub fn histogram(xs: List[F64], bins: Int where _ >= 1) -> List[Bin]
+  post r.len <= bins
+  ex histogram([1.0, 2.0, 2.5, 4.0], 3) == [Bin{lo: 1.0, hi: 2.0, count: 1}, Bin{lo: 2.0, hi: 3.0, count: 2}, Bin{lo: 3.0, hi: 4.0, count: 1}]
+= do
+  fin = xs.filter(_.is_finite)
+  match (fin.min, fin.max)
+  | (some(lo), some(hi)) => if hi == lo then [Bin{lo, hi, count: fin.len}] else histogram_range(fin, lo, hi, bins)
+  | _ => []
+
+// The trailing simple moving average over `window` values: one result per full window, so
+// `xs.len - window + 1` results (`[]` when `xs` is shorter than the window).
+pub fn moving_average(xs: List[F64], window: Int where _ >= 1) -> List[F64]
+  post r.len == max(xs.len - window + 1, 0)
+  ex moving_average([1.0, 2.0, 3.0, 4.0], 2) == [1.5, 2.5, 3.5]
+= if xs.len < window then [] else xs.windows(window).map(w => compensated_sum(w) / window.to_f64)
+
+// The exponential moving average with smoothing factor `alpha` (0 < alpha <= 1), seeded with
+// the first value: `e[0] = x[0]`, `e[i] = alpha * x[i] + (1 - alpha) * e[i - 1]`.
+pub fn exponential_moving_average(xs: List[F64], alpha: F64 where _ > 0.0 and _ <= 1.0) -> List[F64]
+  post r.len == xs.len
+= match xs
+| [] => []
+| [first, ..rest] => rest.scan(first, (e, x) => alpha * x + (1.0 - alpha) * e).push_front(first)
+
+// ---------- tests ----------
+
+fn near(a: F64, b: F64) -> Bool
+= approx_equal(a, b, 1e-12, 1e-12)
+
+fn near_opt(a: Opt[F64], b: F64) -> Bool
+= match a
+| some(x) => near(x, b)
+| none => false
+
+fn near_all(a: List[F64], b: List[F64]) -> Bool
+= a.len == b.len and a.zip(b).all(p => near(p.0, p.1))
+
+fn is_nan_opt(a: Opt[F64]) -> Bool
+= a.map(_.is_nan).or(false)
+
+fn py_data() -> List[F64]
+= [2.75, 1.75, 1.25, 0.25, 0.5, 1.25, 3.5]
+
+test int_bounds = int_max() + int_min() == -1 and int_max().checked_add(1) == none
+
+test abs_checked = checked_abs(-5) == some(5) and checked_abs(int_min()) == none and checked_abs(int_max()) == some(int_max())
+
+test signs = sign_int(-9) == -1 and sign_int(0) == 0 and sign_int(int_max()) == 1 and sign_int(int_min()) == -1
+
+test signs_f64 = sign_f64(-3.5) == -1.0 and sign_f64(2.0) == 1.0 and sign_f64(0.0) == 0.0 and sign_f64(-0.0).str == "-0.0" and sign_f64(nan()).is_nan and sign_f64(-inf()) == -1.0
+
+test gcds = gcd_all([12, -18, 30]) == 6 and gcd_all([]) == 0 and gcd_all([0, 0]) == 0 and gcd_all([7]) == 7 and gcd_all([int_min(), 6]) == 2
+
+test lcms = checked_lcm(4, 6) == some(12) and checked_lcm(-4, 6) == some(12) and checked_lcm(0, 5) == some(0) and checked_lcm(int_max(), 2) == none and checked_lcm(int_min(), int_min()) == none
+
+test lcm_lists = lcm_all([2, 3, 4]) == some(12) and lcm_all([]) == some(1) and lcm_all([5, 0]) == some(0) and lcm_all((1..60).map(i => i)) == none and lcm_all((1..41).map(i => i)) == some(5342931457063200)
+
+test egcd_identity = [(240, 46), (-240, 46), (17, 0), (0, -5), (0, 0), (int_max(), 2), (1071, 462)].all(ab => do
+  (g, x, y) = egcd(ab.0, ab.1)
+  g == ab.0.gcd(ab.1) and big(ab.0).mul(big(x)).add(big(ab.1).mul(big(y))) == big(g))
+
+test coprime = is_coprime(8, 15) and not is_coprime(8, 12) and is_coprime(1, 0) and not is_coprime(0, 0)
+
+test floor_division = floor_div(7, 2) == 3 and floor_div(-7, 2) == -4 and floor_div(7, -2) == -4 and floor_div(-7, -2) == 3 and floor_div(-6, 2) == -3 and floor_div(int_min(), 2) == -4611686018427387904
+
+test floor_modulo = floor_mod(7, 3) == 1 and floor_mod(-7, 3) == 2 and floor_mod(7, -3) == -2 and floor_mod(-7, -3) == -1 and floor_mod(6, 3) == 0 and floor_mod(int_min(), int_max()) == int_max() - 1
+
+test ceil_division = ceil_div(7, 2) == 4 and ceil_div(-7, 2) == -3 and ceil_div(7, -2) == -3 and ceil_div(-7, -2) == 4 and ceil_div(6, 3) == 2 and ceil_div(0, 5) == 0
+
+test euclid = [(7, 3), (-7, 3), (7, -3), (-7, -3), (int_min(), 3), (int_min(), int_min()), (5, int_min())].all(ab => do
+  q = euclid_div(ab.0, ab.1)
+  m = euclid_mod(ab.0, ab.1)
+  m >= 0 and big(ab.1).mul(big(q)).add(big(m)) == big(ab.0)) and euclid_mod(-7, -3) == 2 and euclid_div(-7, -3) == 3
+
+test addmods = addmod(5, 7, 10) == 2 and addmod(-1, 0, 10) == 9 and addmod(int_min(), int_min(), 7) == big(int_min()).mul(big(2)).rem(big(7)).add(big(7)).rem(big(7)).to_int.or(-1)
+
+test mulmods = mulmod(3, 4, 5) == 2 and mulmod(-3, 4, 5) == 3 and mulmod(int_min(), int_min(), 1000000007) == big(int_min()).mul(big(int_min())).rem(big(1000000007)).to_int.or(-1) and mulmod(123, 456, 1) == 0
+
+test mod_pows = mod_pow(3, 200, 1000000007) == 136318165 and mod_pow(2, int_max(), 9223372036854775783) == 33554432 and mod_pow(2, 62, int_max()) == 4611686018427387904 and mod_pow(int_min(), 3, 1000) == big(int_min()).pow(3).rem(big(1000)).add(big(1000)).to_int.or(-1)
+
+test mod_pow_edges = mod_pow(0, 0, 7) == 1 and mod_pow(5, 0, 1) == 0 and mod_pow(-2, 3, 5) == 2 and mod_pow(0, 5, 3) == 0 and mod_pow(int_max(), int_max(), int_max()) == 0
+
+test fermat = mod_pow(2, 9223372036854775782, 9223372036854775783) == 1
+
+test inverses = mod_inv(3, 11) == some(4) and mod_inv(-3, 11) == some(7) and mod_inv(6, 9) == none and mod_inv(5, 1) == some(0) and mod_inv(10, 9223372036854775783).map(x => mulmod(x, 10, 9223372036854775783)) == some(1)
+
+test square_roots = isqrt(0) == 0 and isqrt(1) == 1 and isqrt(24) == 4 and isqrt(25) == 5 and isqrt(int_max()) == 3037000499 and isqrt(9223372030926249001) == 3037000499 and isqrt(9223372030926249000) == 3037000498
+
+test nth_roots = iroot(0, 5) == 0 and iroot(1, 64) == 1 and iroot(int_max(), 1) == int_max() and iroot(int_max(), 2) == 3037000499 and iroot(int_max(), 3) == 2097151 and iroot(int_max(), 63) == 1 and iroot(int_max(), 62) == 2 and iroot(80, 4) == 2 and iroot(81, 4) == 3
+
+test cube_roots = icbrt(27) == 3 and icbrt(26) == 2 and icbrt(-27) == -3 and icbrt(-9) == -3 and icbrt(0) == 0 and icbrt(-1) == -1 and icbrt(int_max()) == 2097151 and icbrt(int_min()) == -2097152
+
+test powers = checked_pow(2, 63) == none and checked_pow(-2, 63) == some(int_min()) and checked_pow(0, 0) == some(1) and checked_pow(1, int_max()) == some(1) and checked_pow(-1, int_max()) == some(-1) and checked_pow(10, 18) == some(1000000000000000000) and checked_pow(10, 19) == none and checked_pow(3037000500, 2) == none and checked_pow(0, 5) == some(0)
+
+test perfect_squares = is_perfect_square(0) and is_perfect_square(1) and is_perfect_square(9223372030926249001) and not is_perfect_square(int_max()) and not is_perfect_square(-4) and not is_perfect_square(2)
+
+test perfect_powers = perfect_power(64) == some((2, 6)) and perfect_power(-8) == some((-2, 3)) and perfect_power(-16) == none and perfect_power(1) == none and perfect_power(0) == none and perfect_power(12) == none and perfect_power(int_min()) == some((-2, 63)) and perfect_power(4611686018427387904) == some((2, 62)) and is_perfect_power(1000000000000000000) and not is_perfect_power(int_max())
+
+test powers_of_two = is_power_of_two(1) and is_power_of_two(4611686018427387904) and not is_power_of_two(0) and not is_power_of_two(int_min()) and not is_power_of_two(6) and next_power_of_two(0) == some(1) and next_power_of_two(-5) == some(1) and next_power_of_two(8) == some(8) and next_power_of_two(9) == some(16) and next_power_of_two(4611686018427387904) == some(4611686018427387904) and next_power_of_two(4611686018427387905) == none
+
+test digit_lists = digits(0, 10) == [0] and digits(255, 2) == [1, 1, 1, 1, 1, 1, 1, 1] and digits(int_min(), 10) == [9, 2, 2, 3, 3, 7, 2, 0, 3, 6, 8, 5, 4, 7, 7, 5, 8, 0, 8] and digits(int_max(), int_max()) == [1, 0] and digits(35, 36) == [35]
+
+test digit_sums = digit_sum(0) == 0 and digit_sum(-1234) == 10 and digit_sum(int_min()) == 89 and num_digits(0, 10) == 1 and num_digits(int_max(), 10) == 19 and num_digits(-8, 2) == 4
+
+test digital_roots = digital_root(0) == 0 and digital_root(9) == 9 and digital_root(493193) == 2 and digital_root(-18) == 9 and digital_root(int_min()) == 8 and digital_root(int_max()) == 7
+
+test from_digit_lists = from_digits([], 10) == some(0) and from_digits([1, 0, 1], 2) == some(5) and from_digits([1, 10], 10) == none and from_digits([-1], 10) == none and from_digits(digits(int_max(), 7), 7) == some(int_max()) and from_digits([9, 2, 2, 3, 3, 7, 2, 0, 3, 6, 8, 5, 4, 7, 7, 5, 8, 0, 8], 10) == none
+
+test radix_out = to_radix(0, 2) == "0" and to_radix(-5, 2) == "-101" and to_radix(35, 36) == "z" and to_radix(int_min(), 16) == "-8000000000000000" and to_radix(int_max(), 36) == "1y2p0ij32e8e7"
+
+test radix_in = from_radix("FF", 16) == some(255) and from_radix("+z", 36) == some(35) and from_radix("-8000000000000000", 16) == some(int_min()) and from_radix("8000000000000000", 16) == none and from_radix("1y2p0ij32e8e7", 36) == some(int_max()) and from_radix("", 10) == none and from_radix("-", 10) == none and from_radix("12a", 10) == none and from_radix(" 1", 10) == none and from_radix("0x1f", 16) == none and from_radix("é", 36) == none
+
+test radix_round_trip = [0, 1, -1, 42, int_max(), int_min(), 123456789].all(n => (2..37).all(b => from_radix(to_radix(n, b), b) == some(n)))
+
+test div_round_modes = [HalfUp, HalfDown, HalfEven, HalfAwayFromZero, HalfTowardZero, Up, Down, Ceiling, Floor].map(m => [div_round(5, 2, m), div_round(-5, 2, m), div_round(7, 2, m), div_round(8, 3, m), div_round(-8, 3, m), div_round(6, 3, m)]) == [[3, -2, 4, 3, -3, 2], [2, -3, 3, 3, -3, 2], [2, -2, 4, 3, -3, 2], [3, -3, 4, 3, -3, 2], [2, -2, 3, 3, -3, 2], [3, -3, 4, 3, -3, 2], [2, -2, 3, 2, -2, 2], [3, -2, 4, 3, -2, 2], [2, -3, 3, 2, -3, 2]]
+
+test div_round_extremes = div_round(int_max(), int_min(), HalfEven) == -1 and div_round(int_min(), int_max(), Down) == -1 and div_round(int_min(), 2, HalfEven) == -4611686018427387904 and div_round(int_max(), 2, HalfUp) == 4611686018427387904 and div_round(int_max(), 2, Down) == 4611686018427387903 and div_round(-1, int_min(), HalfEven) == 0 and div_round(1, 2, HalfAwayFromZero) == 1
+
+test int_multiples = round_int_to_multiple(17, 5, HalfEven) == some(15) and round_int_to_multiple(-17, 5, Floor) == some(-20) and round_int_to_multiple(12, 10, Ceiling) == some(20) and round_int_to_multiple(int_max(), 10, Ceiling) == none and round_int_to_multiple(25, 10, HalfEven) == some(20) and round_int_to_multiple(0, 7, Up) == some(0)
+
+test round_to_ties = [HalfUp, HalfDown, HalfEven, HalfAwayFromZero, HalfTowardZero, Up, Down, Ceiling, Floor].map(m => [round_to(2.5, 0, m), round_to(-2.5, 0, m), round_to(2.675, 2, m), round_to(-0.125, 2, m), round_to(1.21, 1, m)]) == [[3.0, -2.0, 2.68, -0.12, 1.2], [2.0, -3.0, 2.67, -0.13, 1.2], [2.0, -2.0, 2.68, -0.12, 1.2], [3.0, -3.0, 2.68, -0.13, 1.2], [2.0, -2.0, 2.67, -0.12, 1.2], [3.0, -3.0, 2.68, -0.13, 1.3], [2.0, -2.0, 2.67, -0.12, 1.2], [3.0, -2.0, 2.68, -0.12, 1.3], [2.0, -3.0, 2.67, -0.13, 1.2]]
+
+test round_to_edges = round_to(nan(), 2, HalfEven).is_nan and round_to(inf(), 2, Up) == inf() and round_to(-0.0, 1, Up).str == "-0.0" and round_to(1234.5678, -2, HalfEven) == 1200.0 and round_to(1234.5, -4, HalfEven) == 0.0 and round_to(5000.0, -4, HalfEven) == 0.0 and round_to(5000.0, -4, HalfAwayFromZero) == 10000.0 and round_to(-0.001, 2, HalfEven).str == "-0.0" and round_to(0.1 + 0.2, 10, HalfEven) == 0.3 and round_to(1e300, 2, Up) == 1e300 and round_to(5e-324, 400, Up) == 5e-324 and round_to(5e-324, 2, Up) == 0.01 and round_to(1.7976931348623157e308, -308, Up) == inf() and round_to(1.5e-7, 7, HalfEven) == 2e-7
+
+test float_multiples = round_to_multiple(7.3, 0.5, HalfEven) == 7.5 and round_to_multiple(7.25, 0.5, HalfEven) == 7.0 and round_to_multiple(-7.3, 0.5, Floor) == -7.5 and round_to_multiple(0.3, 0.1, Floor) == 0.3 and round_to_multiple(1e300, 3e-300, Down) == 1e300 or round_to_multiple(1.0, 3.0, HalfEven) == 0.0 and round_to_multiple(nan(), 1.0, Up).is_nan and round_to_multiple(17.0, 5.0, Down) == 15.0
+
+test lerps = lerp(10.0, 20.0, 0.25) == 12.5 and lerp(10.0, 20.0, 0.0) == 10.0 and lerp(0.1, 0.7, 1.0) == 0.7 and lerp(0.0, 10.0, 2.0) == 20.0 and lerp(5.0, -5.0, 0.5) == 0.0
+
+test inverse_lerps = inverse_lerp(10.0, 20.0, 12.5) == some(0.25) and inverse_lerp(1.0, 1.0, 1.0) == none and inverse_lerp(20.0, 10.0, 25.0) == some(-0.5)
+
+test remaps = remap(5.0, 0.0, 10.0, 100.0, 200.0) == some(150.0) and remap(1.0, 2.0, 2.0, 0.0, 1.0) == none and remap(15.0, 0.0, 10.0, 0.0, 1.0) == some(1.5) and remap(32.0, 32.0, 212.0, 0.0, 100.0) == some(0.0)
+
+test smoothsteps = smoothstep(0.0, 1.0, 0.5) == 0.5 and smoothstep(0.0, 1.0, -1.0) == 0.0 and smoothstep(0.0, 1.0, 2.0) == 1.0 and smoothstep(1.0, 1.0, 0.5) == 0.0 and smoothstep(1.0, 1.0, 1.0) == 1.0 and near(smoothstep(0.0, 10.0, 2.5), 0.15625) and smoothstep(1.0, 0.0, 0.25) == smoothstep(0.0, 1.0, 0.75)
+
+test closeness = approx_equal(1.0, 1.0 + 1e-10, 1e-9, 0.0) and not approx_equal(1.0, 1.1, 1e-9, 0.0) and approx_equal(0.0, -0.0, 0.0, 0.0) and not approx_equal(nan(), nan(), 1.0, 1.0) and approx_equal(inf(), inf(), 0.0, 0.0) and not approx_equal(inf(), -inf(), 1.0, 1.0) and not approx_equal(inf(), 1e308, 1.0, 0.0) and not approx_equal(0.0, 1e-12, 1e-9, 0.0) and approx_equal(0.0, 1e-12, 1e-9, 1e-10)
+
+test is_close_default = is_close(0.1 + 0.2, 0.3) and not is_close(0.1, 0.10001) and is_close(1e300, 1e300 * (1.0 + 1e-12))
+
+test angles = near(deg_to_rad(180.0), pi()) and near(rad_to_deg(pi() / 2.0), 90.0) and deg_to_rad(0.0) == 0.0 and near(rad_to_deg(deg_to_rad(123.456)), 123.456)
+
+test wraps = wrap(370.0, 0.0, 360.0) == 10.0 and wrap(-1.0, 0.0, 360.0) == 359.0 and wrap(360.0, 0.0, 360.0) == 0.0 and wrap(5.0, 2.0, 4.0) == 3.0 and wrap(-0.5, -1.0, 1.0) == -0.5 and wrap(1.0, -1.0, 1.0) == -1.0 and wrap(inf(), 0.0, 1.0).is_nan and wrap(nan(), 0.0, 1.0).is_nan and wrap(-1e-20, 0.0, 360.0) < 360.0
+
+test angle_normalization = normalize_degrees(-90.0) == 270.0 and normalize_degrees(720.0) == 0.0 and normalize_degrees(359.5) == 359.5 and near(normalize_radians(3.0 * pi()), -pi()) and near(normalize_radians(-pi() / 2.0), -pi() / 2.0) and normalize_radians(0.0) == 0.0
+
+test primality_small = (0..60).filter(is_prime) == [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59] and not is_prime(-7) and not is_prime(1) and not is_prime(int_min())
+
+test primality_hard = not is_prime(561) and not is_prime(2047) and not is_prime(3215031751) and not is_prime(3825123056546413051) and is_prime(2305843009213693951) and is_prime(9223372036854775783) and not is_prime(int_max()) and not is_prime(9223371873002223329) and is_prime(3037000493) and is_prime(1000000007)
+
+test sieve = primes_up_to(0) == [] and primes_up_to(1) == [] and primes_up_to(2) == [2] and primes_up_to(30) == [2, 3, 5, 7, 11, 13, 17, 19, 23, 29] and primes_up_to(10000).len == 1229 and primes_up_to(10000).all(is_prime) and primes_up_to(100000).len == 9592
+
+test next_primes = next_prime(0) == some(2) and next_prime(-100) == some(2) and next_prime(2) == some(3) and next_prime(13) == some(17) and next_prime(9223372036854775782) == some(9223372036854775783) and next_prime(9223372036854775783) == none and next_prime(int_max()) == none and next_prime(1000000000000000000) == some(1000000000000000003)
+
+test prev_primes = prev_prime(2) == none and prev_prime(-3) == none and prev_prime(3) == some(2) and prev_prime(4) == some(3) and prev_prime(int_max()) == some(9223372036854775783) and prev_prime(1000000000000000000) == some(999999999999999989)
+
+test factors = prime_factors(1) == [] and prime_factors(2) == [2] and prime_factors(360) == [2, 2, 2, 3, 3, 5] and prime_factors(int_max()) == [7, 7, 73, 127, 337, 92737, 649657] and prime_factors(4611686018427387904) == (0..62).map(i => 2) and prime_factors(9223371873002223329) == [3037000453, 3037000493] and prime_factors(3825123056546413051) == [149491, 747451, 34233211] and prime_factors(9223372036854775783) == [9223372036854775783] and prime_factors(600851475143) == [71, 839, 1471, 6857]
+
+test factorizations = factorize(1) == [] and factorize(360) == [(2, 3), (3, 2), (5, 1)] and factorize(1000000007 * 1000000007) == [(1000000007, 2)] and factorize(4611686018427387904) == [(2, 62)]
+
+test divisor_lists = divisors(1) == [1] and divisors(12) == [1, 2, 3, 4, 6, 12] and divisors(97) == [1, 97] and divisors(9223371873002223329) == [1, 3037000453, 3037000493, 9223371873002223329] and divisors(720720).len == 240 and divisors(int_max()).len == 96
+
+test totients = totient(1) == 1 and totient(2) == 1 and totient(9) == 6 and totient(97) == 96 and totient(int_max()) == 7713001620195508224 and totient(9223372036854775783) == 9223372036854775782
+
+test factorials = factorial(0) == big(1) and factorial(1) == big(1) and factorial(25).str == "15511210043330985984000000" and factorial(1000).str.len == 2568 and factorial_int(20) == some(2432902008176640000) and factorial_int(21) == none and factorial_int(0) == some(1)
+
+test binomials = comb(100, 50).str == "100891344545564193334812497256" and comb(5, -1) == big(0) and comb(5, 6) == big(0) and comb(0, 0) == big(1) and comb(10, 10) == big(1) and comb(int_max(), 1) == big(int_max()) and comb(int_max(), int_max() - 1) == big(int_max()) and comb(1000, 500).str.len == 300
+
+test binomials_int = comb_int(66, 33) == some(7219428434016265740) and comb_int(67, 33) == none and comb_int(10, 3) == some(120) and comb_int(5, 9) == some(0) and comb_int(int_max(), 1) == some(int_max()) and comb_int(int_max(), 2) == none and (0..41).all(k => comb_int(40, k).map(big) == some(comb(40, k)))
+
+test permutations = perm(20, 10) == big(670442572800) and perm(5, 0) == big(1) and perm(5, 6) == big(0) and perm(0, 0) == big(1) and perm_int(20, 10) == some(670442572800) and perm_int(30, 20) == none and perm_int(3, -1) == some(0) and perm_int(int_max(), 1) == some(int_max())
+
+test multinomials = multinomial([]) == big(1) and multinomial([2, 1, 1]) == big(12) and multinomial([0, 0]) == big(1) and multinomial([1, 1, 1, 1, 1]) == big(120) and multinomial([50, 50]) == comb(100, 50)
+
+test catalans = (0..10).map(catalan) == [1, 1, 2, 5, 14, 42, 132, 429, 1430, 4862].map(big) and catalan(100).str == "896519947090131496687170070074100632420837521538745909320"
+
+test fibonaccis = (0..12).map(fibonacci) == [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89].map(big) and fibonacci(300).str == "222232244629420445529739893461909967206666939096499764990979600" and fibonacci_int(92) == some(7540113804746346429) and fibonacci_int(93) == none and fibonacci_int(0) == some(0)
+
+test int_lists = floats([1, -2]) == [1.0, -2.0] and floats([]) == [] and checked_sum([1, 2, 3]) == some(6) and checked_sum([]) == some(0) and checked_sum([int_max(), 1]) == none and checked_sum([int_max(), 1, -1]) == none and checked_sum([int_min(), int_max()]) == some(-1) and checked_product([]) == some(1) and checked_product([3, -4]) == some(-12) and checked_product([int_min(), -1]) == none and checked_product([0, int_max(), int_max()]) == some(0)
+
+test sums = compensated_sum([]) == 0.0 and compensated_sum([1e100, 1.0, -1e100]) == 1.0 and compensated_sum((0..10).map(i => 0.1)) == 1.0 and compensated_sum([inf(), 1.0]) == inf() and compensated_sum([inf(), -inf()]).is_nan and compensated_sum([nan(), 1.0]).is_nan and compensated_sum([1e308, 1e308]) == inf()
+
+test products = product([]) == 1.0 and product([2.0, -3.0, 0.5]) == -3.0 and product([1e200, 1e200]) == inf() and product([nan()]).is_nan
+
+test cumulative = cumulative_sum([]) == [] and cumulative_sum([1.0, 2.0, 3.0]) == [1.0, 3.0, 6.0] and cumulative_sum((0..10).map(i => 0.1)).last == some(1.0) and cumulative_sum([1e100, 1.0, -1e100]) == [1e100, 1e100, 1.0]
+
+test means = mean([]) == none and mean([5.0]) == some(5.0) and near_opt(mean(py_data()), 1.6071428571428572) and mean([1e308, 1e308]) == some(1e308) and is_nan_opt(mean([1.0, nan()])) and mean([inf(), 1.0]) == some(inf()) and mean(floats([1, 2, 3, 4])) == some(2.5) and mean([-1.0, 1.0]) == some(0.0)
+
+test weighted = weighted_mean([1.0, 2.0, 3.0], [3.0, 1.0, 0.0]) == some(1.25) and weighted_mean([], []) == none and weighted_mean([1.0], [1.0, 2.0]) == none and weighted_mean([1.0, 2.0], [0.0, 0.0]) == none and weighted_mean([1.0, 2.0], [-1.0, 2.0]) == none and weighted_mean([7.0], [0.5]) == some(7.0)
+
+test geometric = near_opt(geometric_mean([54.0, 24.0, 36.0]), 36.000000000000014) and geometric_mean([]) == none and geometric_mean([1.0, -1.0]) == none and geometric_mean([4.0, 0.0]) == some(0.0) and near_opt(geometric_mean([1e300, 1e300]), 1e300) and is_nan_opt(geometric_mean([nan(), 1.0])) and geometric_mean([2.0]) == some(2.0)
+
+test harmonic = near_opt(harmonic_mean([40.0, 60.0]), 48.0) and harmonic_mean([]) == none and harmonic_mean([1.0, -2.0]) == none and harmonic_mean([3.0, 0.0]) == some(0.0) and harmonic_mean([2.5]) == some(2.5) and is_nan_opt(harmonic_mean([nan()]))
+
+test medians = median([]) == none and median([3.0]) == some(3.0) and median([3.0, 1.0]) == some(2.0) and median(py_data()) == some(1.25) and median([1.0, 3.0, 5.0, 7.0]) == some(4.0) and median([1.7976931348623157e308, 1.7976931348623157e308]) == some(1.7976931348623157e308) and is_nan_opt(median([1.0, nan(), 2.0])) and median([-inf(), inf()]).map(_.is_nan) == some(true)
+
+test median_sides = median_low([1.0, 3.0, 5.0, 7.0]) == some(3.0) and median_high([1.0, 3.0, 5.0, 7.0]) == some(5.0) and median_low([2.0, 9.0, 4.0]) == some(4.0) and median_high([2.0, 9.0, 4.0]) == some(4.0) and median_low([]) == none and median_high([]) == none and is_nan_opt(median_low([nan()])) and is_nan_opt(median_high([nan()]))
+
+test modes = mode([1, 1, 2, 3, 3]) == some(1) and mode(["b", "a", "a"]) == some("a") and mode([]) == none and mode([nan(), nan(), 1.0]).map(_.is_nan) == some(true) and mode([4.0]) == some(4.0)
+
+test multimodes = multimode([1, 1, 2, 3, 3]) == [1, 3] and multimode(["x"]) == ["x"] and multimode([]) == [] and multimode("aabbbcccc".chars) == ["c"] and multimode([3, 2, 1]) == [3, 2, 1]
+
+test variances = near_opt(variance(py_data()), 1.3720238095238095) and near_opt(pvariance(py_data()), 1.1760204081632653) and variance([1.0]) == none and pvariance([1.0]) == some(0.0) and pvariance([]) == none and variance([]) == none and variance([1000000000.0 + 4.0, 1000000000.0 + 7.0, 1000000000.0 + 13.0, 1000000000.0 + 16.0]) == some(30.0) and is_nan_opt(variance([1.0, nan()])) and pvariance([2.0, 2.0, 2.0]) == some(0.0)
+
+test stdevs = near_opt(stdev(py_data()), 1.171334200612195) and near_opt(pstdev(py_data()), 1.084444746477784) and stdev([1.0]) == none and pstdev([]) == none and pstdev([5.0]) == some(0.0)
+
+test quantile_methods = [Linear, Lower, Higher, Midpoint, Nearest].map(m => [0.1, 0.25, 0.5, 0.9].map(p => quantile(floats((1..11).map(i => i)), p, m).or(-1.0))) == [[1.9, 3.25, 5.5, 9.1], [1.0, 3.0, 5.0, 9.0], [2.0, 4.0, 6.0, 10.0], [1.5, 3.5, 5.5, 9.5], [2.0, 3.0, 5.0, 9.0]]
+
+test quantile_rank = quantile([15.0, 20.0, 35.0, 40.0, 50.0], 0.3, NearestRank) == some(20.0) and quantile([15.0, 20.0, 35.0, 40.0, 50.0], 0.4, NearestRank) == some(20.0) and quantile([15.0, 20.0, 35.0, 40.0, 50.0], 0.0, NearestRank) == some(15.0) and quantile([15.0, 20.0, 35.0, 40.0, 50.0], 1.0, NearestRank) == some(50.0) and quantile([3.0, 1.0, 2.0], 0.5, Exclusive) == some(2.0) and quantile([1.0, 2.0], 0.01, Exclusive) == some(1.0)
+
+test quantile_edges = quantile([], 0.5, Linear) == none and quantile([7.0], 0.0, Linear) == some(7.0) and quantile([7.0], 1.0, Exclusive) == some(7.0) and [Linear, Exclusive, Lower, Higher, Midpoint, Nearest, NearestRank].all(m => quantile([4.0, 9.0], 0.0, m) == some(4.0) and quantile([4.0, 9.0], 1.0, m) == some(9.0)) and is_nan_opt(quantile([1.0, nan()], 0.5, Lower))
+
+test percentiles = percentile([1.0, 2.0, 3.0, 4.0, 5.0], 90.0) == some(4.6) and percentile([1.0, 2.0, 3.0, 4.0, 5.0], 0.0) == some(1.0) and percentile([1.0, 2.0, 3.0, 4.0, 5.0], 100.0) == some(5.0) and percentile([], 50.0) == none and percentile([5.0, 1.0], 50.0) == some(3.0)
+
+test quantile_cuts = quantiles(floats((1..11).map(i => i)), 4, Exclusive) == some([2.75, 5.5, 8.25]) and quantiles(floats((1..11).map(i => i)), 4, Linear) == some([3.25, 5.5, 7.75]) and quantiles([], 4, Linear) == none and quantiles([1.0, 2.0], 1, Linear) == some([]) and quantiles([5.0], 4, Exclusive) == some([5.0, 5.0, 5.0]) and quantiles([nan()], 2, Linear).map(_.len) == some(1)
+
+test spreads = iqr([1.0, 2.0, 3.0, 4.0, 5.0]) == some(2.0) and iqr([]) == none and iqr([3.0]) == some(0.0) and value_range([3.0, -1.0, 7.0]) == some(8.0) and value_range([]) == none and value_range([2.0]) == some(0.0) and is_nan_opt(value_range([1.0, nan()]))
+
+test z_scores = zscores([]) == none and zscores([2.0, 2.0]) == none and zscores([1.0, 3.0]) == some([-1.0, 1.0]) and zscores(py_data()).map(zs => near(zs[0], 1.0538638751020546) and near(zs[1], 0.13173298438775677)) == some(true)
+
+test min_max = min_max_normalize([2.0, 4.0, 6.0]) == some([0.0, 0.5, 1.0]) and min_max_normalize([]) == none and min_max_normalize([3.0, 3.0]) == none and min_max_normalize([-1.0, 1.0]) == some([0.0, 1.0])
+
+test covariances = covariance(floats((1..10).map(i => i)), [1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0]) == some(0.75) and covariance([1.0], [2.0]) == none and covariance([1.0, 2.0], [1.0]) == none and covariance([1.0, 2.0, 3.0], [3.0, 2.0, 1.0]) == some(-1.0)
+
+test correlations = near_opt(correlation(floats((1..10).map(i => i)), [1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0]), 0.31622776601683794) and correlation([1.0, 2.0, 3.0], [2.0, 4.0, 6.0]) == some(1.0) and correlation([1.0, 2.0, 3.0], [3.0, 2.0, 1.0]) == some(-1.0) and correlation([1.0, 1.0], [1.0, 2.0]) == none and correlation([], []) == none and correlation([1.0, 2.0], [1.0]) == none
+
+test rankings = ranks([]) == [] and ranks([10.0, 20.0, 10.0]) == [1.5, 3.0, 1.5] and ranks([3.0, 1.0, 2.0]) == [3.0, 1.0, 2.0] and ranks([5.0, 5.0, 5.0]) == [2.0, 2.0, 2.0] and ranks([1.0, nan(), -inf()]) == [2.0, 3.0, 1.0]
+
+test spearmans = near_opt(spearman([1.0, 2.0, 3.0, 4.0, 5.0], [5.0, 6.0, 7.0, 8.0, 7.0]), 0.8207826816681234) and spearman([1.0, 2.0, 3.0], [1.0, 4.0, 9.0]) == some(1.0) and spearman([1.0, 2.0, 3.0], [9.0, 4.0, 1.0]) == some(-1.0) and spearman([1.0], [1.0]) == none and spearman([1.0, 2.0], [3.0, 3.0]) == none
+
+test regressions = linear_regression([1.0, 2.0, 3.0, 4.0, 5.0], [2.0, 4.0, 5.0, 4.0, 5.0]).map(f => near(f.slope, 0.6) and near(f.intercept, 2.2) and near(f.r_squared, 0.6)) == some(true) and linear_regression([1.0, 1.0], [1.0, 2.0]) == none and linear_regression([1.0], [1.0]) == none and linear_regression([1.0, 2.0], [3.0]) == none and linear_regression([1.0, 2.0, 3.0], [5.0, 5.0, 5.0]) == some(Fit{slope: 0.0, intercept: 5.0, r_squared: 1.0})
+
+test histograms = histogram([], 3) == [] and histogram([5.0, 5.0], 4) == [Bin{lo: 5.0, hi: 5.0, count: 2}] and histogram([nan(), inf(), 1.0, 2.0], 1) == [Bin{lo: 1.0, hi: 2.0, count: 2}] and histogram([0.0, 1.0, 2.0, 3.0, 4.0, 10.0], 5).map(_.count) == [2, 2, 1, 0, 1] and histogram([1.0, 2.0, 2.5, 4.0], 3).map(_.count).sum == 4
+
+test histogram_ranges = histogram_range([0.5, 1.5, 1.5, 9.0, -1.0, nan()], 0.0, 2.0, 2) == [Bin{lo: 0.0, hi: 1.0, count: 1}, Bin{lo: 1.0, hi: 2.0, count: 2}] and histogram_range([], 0.0, 1.0, 3).map(_.count) == [0, 0, 0] and histogram_range([1.0], 0.0, 1.0, 4).last.map(_.count) == some(1)
+
+test moving_averages = moving_average([1.0, 2.0, 3.0, 4.0], 2) == [1.5, 2.5, 3.5] and moving_average([1.0, 2.0], 3) == [] and moving_average([], 1) == [] and moving_average([4.0, 8.0], 1) == [4.0, 8.0] and moving_average([1.0, 2.0, 3.0], 3) == [2.0]
+
+test ema = exponential_moving_average([], 0.5) == [] and exponential_moving_average([2.0], 0.3) == [2.0] and exponential_moving_average([1.0, 3.0, 3.0], 0.5) == [1.0, 2.0, 2.5] and exponential_moving_average([1.0, 9.0], 1.0) == [1.0, 9.0]
