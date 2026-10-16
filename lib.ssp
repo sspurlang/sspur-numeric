@@ -768,16 +768,19 @@ pub fn mean(xs: List[F64]) -> Opt[F64]
 pub fn weighted_mean(xs: List[F64], ws: List[F64]) -> Opt[F64]
 = do
   total = compensated_sum(ws)
-  if xs.is_empty or xs.len != ws.len or ws.any(_ < 0.0) or total == 0.0 then none else some(compensated_sum(xs.zip(ws).map(p => p.0 * p.1)) / total)
+  if xs.is_empty or xs.len != ws.len or ws.any(is_negative) or total == 0.0 then none else some(compensated_sum(xs.zip(ws).map(p => p.0 * p.1)) / total)
 
 // The geometric mean, or `none` for an empty list or a negative value; 0.0 if any value is 0.
 pub fn geometric_mean(xs: List[F64]) -> Opt[F64]
-= if xs.is_empty or xs.any(_ < 0.0) then none else if xs.any(x => x.is_nan) then some(nan()) else if xs.any(_ == 0.0) or xs.any(x => x.abs == 0.0) then some(0.0) else mean(xs.map(_.ln)).map(_.exp)
+= if xs.is_empty or xs.any(is_negative) then none else if xs.any(x => x.is_nan) then some(nan()) else if xs.any(x => x.abs == 0.0) then some(0.0) else mean(xs.map(_.ln)).map(_.exp)
 
 // The harmonic mean, or `none` for an empty list or a negative value; 0.0 if any value is 0
 // (as Python's `statistics.harmonic_mean`).
 pub fn harmonic_mean(xs: List[F64]) -> Opt[F64]
-= if xs.is_empty or xs.any(_ < 0.0) then none else if xs.any(x => x.is_nan) then some(nan()) else if xs.any(x => x.abs == 0.0) then some(0.0) else some(xs.len.to_f64 / compensated_sum(xs.map(1.0 / _)))
+= if xs.is_empty or xs.any(is_negative) then none else if xs.any(x => x.is_nan) then some(nan()) else if xs.any(x => x.abs == 0.0) then some(0.0) else some(xs.len.to_f64 / compensated_sum(xs.map(1.0 / _)))
+
+fn is_negative(x: F64) -> Bool
+= x < 0.0 and x.abs != 0.0
 
 fn has_nan(xs: List[F64]) -> Bool
 = xs.any(x => x.is_nan)
@@ -1190,9 +1193,9 @@ test means = mean([]) == none and mean([5.0]) == some(5.0) and near_opt(mean(py_
 
 test weighted = weighted_mean([1.0, 2.0, 3.0], [3.0, 1.0, 0.0]) == some(1.25) and weighted_mean([], []) == none and weighted_mean([1.0], [1.0, 2.0]) == none and weighted_mean([1.0, 2.0], [0.0, 0.0]) == none and weighted_mean([1.0, 2.0], [-1.0, 2.0]) == none and weighted_mean([7.0], [0.5]) == some(7.0)
 
-test geometric = near_opt(geometric_mean([54.0, 24.0, 36.0]), 36.000000000000014) and geometric_mean([]) == none and geometric_mean([1.0, -1.0]) == none and geometric_mean([4.0, 0.0]) == some(0.0) and near_opt(geometric_mean([1e300, 1e300]), 1e300) and is_nan_opt(geometric_mean([nan(), 1.0])) and geometric_mean([2.0]) == some(2.0)
+test geometric = near_opt(geometric_mean([54.0, 24.0, 36.0]), 36.000000000000014) and geometric_mean([]) == none and geometric_mean([1.0, -1.0]) == none and geometric_mean([4.0, 0.0]) == some(0.0) and geometric_mean([4.0, -0.0]) == some(0.0) and near_opt(geometric_mean([1e300, 1e300]), 1e300) and is_nan_opt(geometric_mean([nan(), 1.0])) and geometric_mean([2.0]) == some(2.0)
 
-test harmonic = near_opt(harmonic_mean([40.0, 60.0]), 48.0) and harmonic_mean([]) == none and harmonic_mean([1.0, -2.0]) == none and harmonic_mean([3.0, 0.0]) == some(0.0) and harmonic_mean([2.5]) == some(2.5) and is_nan_opt(harmonic_mean([nan()]))
+test harmonic = near_opt(harmonic_mean([40.0, 60.0]), 48.0) and harmonic_mean([]) == none and harmonic_mean([1.0, -2.0]) == none and harmonic_mean([3.0, 0.0]) == some(0.0) and harmonic_mean([-0.0]) == some(0.0) and weighted_mean([1.0, 3.0], [-0.0, 1.0]) == some(3.0) and harmonic_mean([2.5]) == some(2.5) and is_nan_opt(harmonic_mean([nan()]))
 
 test medians = median([]) == none and median([3.0]) == some(3.0) and median([3.0, 1.0]) == some(2.0) and median(py_data()) == some(1.25) and median([1.0, 3.0, 5.0, 7.0]) == some(4.0) and median([1.7976931348623157e308, 1.7976931348623157e308]) == some(1.7976931348623157e308) and is_nan_opt(median([1.0, nan(), 2.0])) and median([-inf(), inf()]).map(_.is_nan) == some(true)
 
