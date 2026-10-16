@@ -40,7 +40,7 @@ some(Fit{slope: 2.0, intercept: 0.0, r_squared: 1.0})
 | Definition | What it does |
 |---|---|
 | `int_max()`, `int_min()` | 2^63 - 1 and -2^63 |
-| `checked_abs(x)` | `|x|`, or `none` for `int_min()` |
+| `checked_abs(x)` | the absolute value, or `none` for `int_min()` |
 | `sign_int(x)`, `sign_f64(x)` | -1, 0 or 1; the F64 one keeps -0.0 and NaN |
 | `gcd_all(xs)` | gcd of a list, never negative, 0 for `[]` |
 | `checked_lcm(a, b)`, `lcm_all(xs)` | lcm, `none` on overflow; `lcm_all([]) == some(1)` |
@@ -60,7 +60,7 @@ some(Fit{slope: 2.0, intercept: 0.0, r_squared: 1.0})
 
 | Definition | What it does |
 |---|---|
-| `digits(n, base)`, `from_digits(ds, base)` | digits of `|n|`, most significant first, and back (`none` on a bad digit or overflow) |
+| `digits(n, base)`, `from_digits(ds, base)` | digits of the absolute value, most significant first, and back (`none` on a bad digit or overflow) |
 | `digit_sum(n)`, `num_digits(n, base)`, `digital_root(n)` | decimal digit sum, digit count, repeated digit sum |
 | `to_radix(n, base)`, `from_radix(s, base)` | bases 2 to 36, lowercase out, either case in, optional sign, `none` on anything else |
 
