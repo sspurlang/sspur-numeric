@@ -992,6 +992,10 @@ pub fn linear_regression(xs: List[F64], ys: List[F64]) -> Opt[Fit]
 // One histogram bin: the values `v` with `lo <= v < hi` (the last bin also takes `hi`).
 pub type Bin = {lo: F64, hi: F64, count: Int} derive Eq, Show
 
+// The bin of a value `f` bin widths above the low end: NaN (from infinite bounds) is the first bin.
+fn bin_of(f: F64, bins: Int) -> Int
+= if f.is_nan then 0 else if f >= bins.to_f64 then bins - 1 else f.floor
+
 // `bins` equal-width bins from `lo` to `hi`, counting the values of `xs` inside that range;
 // values outside it and NaN are not counted.
 pub fn histogram_range(xs: List[F64], lo: F64, hi: F64, bins: Int where _ >= 1) -> List[Bin]
@@ -999,7 +1003,7 @@ pub fn histogram_range(xs: List[F64], lo: F64, hi: F64, bins: Int where _ >= 1) 
   post r.len == bins
 = do
   w = (hi - lo) / bins.to_f64
-  idx = xs.filter(x => x >= lo and x <= hi and not x.is_nan).map(x => min(((x - lo) / w).floor, bins - 1))
+  idx = xs.filter(x => x >= lo and x <= hi and not x.is_nan).map(x => bin_of((x - lo) / w, bins))
   cs = idx.counts.to_hash_map
   (0..bins).map(i => Bin{lo: lo + w * i.to_f64, hi: if i == bins - 1 then hi else lo + w * (i + 1).to_f64, count: cs.get(i).or(0)})
 
@@ -1242,3 +1246,5 @@ test histogram_ranges = histogram_range([0.5, 1.5, 1.5, 9.0, -1.0, nan()], 0.0, 
 test moving_averages = moving_average([1.0, 2.0, 3.0, 4.0], 2) == [1.5, 2.5, 3.5] and moving_average([1.0, 2.0], 3) == [] and moving_average([], 1) == [] and moving_average([4.0, 8.0], 1) == [4.0, 8.0] and moving_average([1.0, 2.0, 3.0], 3) == [2.0]
 
 test ema = exponential_moving_average([], 0.5) == [] and exponential_moving_average([2.0], 0.3) == [2.0] and exponential_moving_average([1.0, 3.0, 3.0], 0.5) == [1.0, 2.0, 2.5] and exponential_moving_average([1.0, 9.0], 1.0) == [1.0, 9.0]
+
+test infinite_bounds = histogram_range([1.0, inf()], 0.0, inf(), 2).map(_.count) == [2, 0]

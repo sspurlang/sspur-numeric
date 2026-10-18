@@ -1,5 +1,5 @@
 [package]
 name = "numeric"
-version = "0.1.0"
+version = "0.1.1"
 description = "Number theory, exact rounding modes, primes, combinatorics and statistics for Int, F64 and BigInt, pure and tested in both tiers"
 license = "MIT"
